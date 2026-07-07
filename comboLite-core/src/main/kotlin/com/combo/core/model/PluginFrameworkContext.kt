@@ -26,6 +26,7 @@ import com.combo.core.runtime.installer.XmlManager
 import com.combo.core.runtime.lifecycle.PluginLifecycleManager
 import com.combo.core.runtime.loader.DependencyManager
 import com.combo.core.runtime.loader.IPluginStateProvider
+import com.combo.core.runtime.loader.PluginClassLoadingPolicy
 import com.combo.core.runtime.resource.PluginResourcesManager
 import com.combo.core.security.auth.AuthorizationManager
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -39,6 +40,7 @@ import java.util.concurrent.ConcurrentHashMap
  */
 internal data class PluginFrameworkContext(
     val application: Application,
+    val classLoadingPolicy: PluginClassLoadingPolicy = PluginClassLoadingPolicy.ParentFirst,
 ) {
     // 共享状态
     val loadedPlugins = MutableStateFlow<Map<String, LoadedPluginInfo>>(emptyMap())

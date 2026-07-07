@@ -225,6 +225,7 @@ internal class PluginLifecycleManager(private val context: PluginFrameworkContex
                     optimizedDirectory = optimizedDirectory,
                     librarySearchPath = nativeLibraryPath,
                     pluginFinder = context.dependencyManager,
+                    loadingPolicy = context.classLoadingPolicy,
                 )
 
                 context.resourcesManager.loadPluginResources(plugin.id, pluginApkFile)
@@ -320,7 +321,11 @@ internal class PluginLifecycleManager(private val context: PluginFrameworkContex
         try {
             indexFile.forEachLine { className ->
                 if (className.isNotBlank()) {
-                    context.classIndex[className] = plugin.id
+                    val previousOwner = context.classIndex.put(className, plugin.id)
+                    if (previousOwner != null && previousOwner != plugin.id) {
+                        Timber.Forest.tag(CLASS_INDEX_TAG)
+                            .e("类索引冲突: 类 '$className' 已属于插件 [$previousOwner]，现被插件 [${plugin.id}] 覆盖。")
+                    }
                     loadedCount++
                 }
             }

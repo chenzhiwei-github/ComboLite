@@ -40,6 +40,7 @@ open class PluginClassLoader(
     librarySearchPath: String?,
     parent: ClassLoader?,
     private val pluginFinder: IPluginFinder?,
+    private val loadingPolicy: PluginClassLoadingPolicy = PluginClassLoadingPolicy.ParentFirst,
 ) : DexClassLoader(dexPath, optimizedDirectory, librarySearchPath, parent) {
 
     constructor(
@@ -48,7 +49,8 @@ open class PluginClassLoader(
         parent: ClassLoader,
         optimizedDirectory: String?,
         librarySearchPath: String?,
-        pluginFinder: IPluginFinder?
+        pluginFinder: IPluginFinder?,
+        loadingPolicy: PluginClassLoadingPolicy = PluginClassLoadingPolicy.ParentFirst,
     ) : this(
         pluginId = pluginId,
         dexPath = pluginFile.absolutePath,
@@ -56,7 +58,25 @@ open class PluginClassLoader(
         optimizedDirectory = optimizedDirectory,
         librarySearchPath = librarySearchPath,
         pluginFinder = pluginFinder,
+        loadingPolicy = loadingPolicy,
     )
+
+    override fun loadClass(name: String, resolve: Boolean): Class<*> {
+        val policy = loadingPolicy
+        if (policy !is PluginClassLoadingPolicy.ChildFirst) {
+            return super.loadClass(name, resolve)
+        }
+        findLoadedClass(name)?.let { return it }
+        if (!policy.isChildFirst(name)) {
+            return super.loadClass(name, resolve)
+        }
+        val local = try {
+            findClassLocally(name)
+        } catch (_: ClassNotFoundException) {
+            null
+        }
+        return local ?: super.loadClass(name, resolve)
+    }
 
     /**
      * 重写 findClass 方法，先在当前 ClassLoader 中查找类，

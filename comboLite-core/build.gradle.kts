@@ -85,11 +85,9 @@ dependencies {
 }
 
 mavenPublishing {
-    publishToMavenCentral(automaticRelease = true)
-    signAllPublications()
     val groupId = "io.github.lnzz123"
     val artifactId = "combolite-core"
-    val version = "2.0.2"
+    val version = "2.0.2-xj.2"
     coordinates(groupId, artifactId, version)
     pom {
         name.set("ComboLite Core")

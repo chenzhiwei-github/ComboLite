@@ -29,6 +29,7 @@ import com.combo.core.runtime.ValidationStrategy.Insecure
 import com.combo.core.runtime.ValidationStrategy.Strict
 import com.combo.core.runtime.ValidationStrategy.UserGrant
 import com.combo.core.runtime.installer.InstallerManager
+import com.combo.core.runtime.loader.PluginClassLoadingPolicy
 import com.combo.core.runtime.resource.PluginResourcesManager
 import com.combo.core.security.auth.AuthorizationManager
 import com.combo.core.security.permission.PermissionLevel
@@ -94,6 +95,9 @@ object PluginManager {
     val validationStrategy: ValidationStrategy
         get() = requireContext().validationStrategy
 
+    val classLoadingPolicy: PluginClassLoadingPolicy
+        get() = requireContext().classLoadingPolicy
+
     val installerManager: InstallerManager
         get() = requireContext().installerManager
     val resourcesManager: PluginResourcesManager
@@ -123,6 +127,7 @@ object PluginManager {
     @Synchronized
     fun initialize(
         context: Application,
+        classLoadingPolicy: PluginClassLoadingPolicy = PluginClassLoadingPolicy.ParentFirst,
         onSetup: (suspend () -> Unit)? = null
     ) {
         if (frameworkContext != null && frameworkContext?.initState?.value != InitState.NOT_INITIALIZED) {
@@ -130,7 +135,7 @@ object PluginManager {
             return
         }
 
-        frameworkContext = PluginFrameworkContext(context)
+        frameworkContext = PluginFrameworkContext(context, classLoadingPolicy)
         requireContext().initState.value = INITIALIZING
 
         try {
