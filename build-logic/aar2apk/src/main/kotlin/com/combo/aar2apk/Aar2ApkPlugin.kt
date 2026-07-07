@@ -16,13 +16,19 @@
 package com.combo.aar2apk
 
 import com.combo.aar2apk.internal.model.SdkInfo
+import com.combo.aar2apk.internal.utils.DependencyPatternMatcher
+import com.combo.aar2apk.internal.utils.DependencySplit
 import com.combo.aar2apk.internal.utils.SdkLocator
 import com.combo.aar2apk.tasks.ConvertAarToApkTask
 import org.gradle.api.Plugin
 import org.gradle.api.Project
+import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+import org.gradle.api.artifacts.component.ProjectComponentIdentifier
+import org.gradle.api.artifacts.result.ResolvedArtifactResult
 import org.gradle.api.artifacts.type.ArtifactTypeDefinition
 import org.gradle.api.tasks.Delete
 import org.gradle.kotlin.dsl.register
+import java.io.File
 
 class Aar2ApkPlugin : Plugin<Project> {
 
@@ -100,23 +106,31 @@ class Aar2ApkPlugin : Plugin<Project> {
                     this.buildType.set(buildType)
                     this.packageId.set(pluginPackageIds[modulePath]!!)
                     this.packagingOptions.set(options)
+                    this.minify.set(options.minifyRelease.map { it && buildType == "release" })
+                    this.minApi.set(options.minApi)
+                    this.minifyProguardFiles.from(options.proguardFiles)
+                    this.minifyClasspathFiles.from(options.classpathFiles)
 
                     description =
                         "构建 ${subproject.name} 模块并转换为 $buildTypeCapitalized 插件APK (精细化配置)"
 
                     val config = subproject.configurations.getByName("${buildType}RuntimeClasspath")
 
+                    this.extraProgramJars.from(options.extraProgramJars)
+                    this.extraRPackages.set(options.extraRPackages)
+                    this.hostProvidedClassPrefixes.set(options.hostProvidedClassPrefixes)
+
                     if (options.isAnyDependencyIncluded()) {
-                        remoteDependencyAars.from(config.incoming.artifactView {
-                            attributes {
-                                attribute(
-                                    ArtifactTypeDefinition.ARTIFACT_TYPE_ATTRIBUTE,
-                                    "aar"
-                                )
-                            }
-                            componentFilter { it is org.gradle.api.artifacts.component.ModuleComponentIdentifier }
+                        val remoteArtifacts = config.incoming.artifactView {
+                            componentFilter { it is ModuleComponentIdentifier }
                             lenient(true)
-                        }.files)
+                        }.artifacts.resolvedArtifacts
+                        val remoteSplit =
+                            remoteArtifacts.zip(options.hostProvidedPatterns, ::splitArtifacts)
+                        remoteProgramArtifacts.from(remoteSplit.map { it.programFiles })
+                        hostProvidedClasspath.from(remoteSplit.map { it.hostProvidedFiles })
+                        programDependencyLines.addAll(remoteSplit.map { it.programLines })
+                        hostProvidedDependencyLines.addAll(remoteSplit.map { it.hostProvidedLines })
                     }
                     if (options.includeDependenciesRes.get()) {
                         localDependencyResDirs.from(config.incoming.artifactView {
@@ -131,16 +145,22 @@ class Aar2ApkPlugin : Plugin<Project> {
                         }.files)
                     }
                     if (options.includeDependenciesDex.get()) {
-                        localDependencyClasses.from(config.incoming.artifactView {
+                        val localClassesArtifacts = config.incoming.artifactView {
                             attributes {
                                 attribute(
                                     ArtifactTypeDefinition.ARTIFACT_TYPE_ATTRIBUTE,
                                     "android-classes-jar"
                                 )
                             }
-                            componentFilter { it is org.gradle.api.artifacts.component.ProjectComponentIdentifier }
+                            componentFilter { it is ProjectComponentIdentifier }
                             lenient(true)
-                        }.files)
+                        }.artifacts.resolvedArtifacts
+                        val localSplit =
+                            localClassesArtifacts.zip(options.hostProvidedPatterns, ::splitArtifacts)
+                        localDependencyClasses.from(localSplit.map { it.programFiles })
+                        hostProvidedClasspath.from(localSplit.map { it.hostProvidedFiles })
+                        programDependencyLines.addAll(localSplit.map { it.programLines })
+                        hostProvidedDependencyLines.addAll(localSplit.map { it.hostProvidedLines })
                     }
                     if (options.includeDependenciesAssets.get()) {
                         localDependencyAssets.from(config.incoming.artifactView {
@@ -209,4 +229,44 @@ class Aar2ApkPlugin : Plugin<Project> {
             }
         }
     }
+}
+
+private fun splitArtifacts(
+    artifacts: Set<ResolvedArtifactResult>,
+    patterns: List<String>,
+): DependencySplit {
+    val matcher = DependencyPatternMatcher(patterns)
+    val programFiles = mutableListOf<File>()
+    val hostProvidedFiles = mutableListOf<File>()
+    val programLines = mutableListOf<String>()
+    val hostProvidedLines = mutableListOf<String>()
+    artifacts.sortedBy { it.file.absolutePath }.forEach { artifact ->
+        val id = artifact.id.componentIdentifier
+        val matched: Boolean
+        val line: String
+        when (id) {
+            is ModuleComponentIdentifier -> {
+                matched = matcher.matchesModule(id.group, id.module)
+                line = "${id.group}:${id.module}:${id.version} -> ${artifact.file.absolutePath}"
+            }
+
+            is ProjectComponentIdentifier -> {
+                matched = matcher.matchesProject(id.projectPath)
+                line = "project ${id.projectPath} -> ${artifact.file.absolutePath}"
+            }
+
+            else -> {
+                matched = false
+                line = "${id.displayName} -> ${artifact.file.absolutePath}"
+            }
+        }
+        if (matched) {
+            hostProvidedFiles.add(artifact.file)
+            hostProvidedLines.add(line)
+        } else {
+            programFiles.add(artifact.file)
+            programLines.add(line)
+        }
+    }
+    return DependencySplit(programFiles, hostProvidedFiles, programLines, hostProvidedLines)
 }

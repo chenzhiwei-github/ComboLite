@@ -17,7 +17,9 @@
 package com.combo.aar2apk
 
 import org.gradle.api.Action
+import org.gradle.api.file.ConfigurableFileCollection
 import org.gradle.api.model.ObjectFactory
+import org.gradle.api.provider.ListProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.Internal
@@ -63,12 +65,41 @@ abstract class PackagingOptions @Inject constructor(
     @get:Input
     abstract val includeDependenciesJni: Property<Boolean>
 
+    @get:Input
+    abstract val minifyRelease: Property<Boolean>
+
+    @get:Input
+    abstract val minApi: Property<Int>
+
+    @get:Internal
+    abstract val proguardFiles: ConfigurableFileCollection
+
+    @get:Internal
+    abstract val classpathFiles: ConfigurableFileCollection
+
+    @get:Input
+    abstract val hostProvidedPatterns: ListProperty<String>
+
+    @get:Input
+    abstract val hostProvidedClassPrefixes: ListProperty<String>
+
+    @get:Internal
+    abstract val extraProgramJars: ConfigurableFileCollection
+
+    @get:Input
+    abstract val extraRPackages: ListProperty<String>
+
     init {
         // 默认所有选项都为 false，即默认采用“最小化”模式
         includeDependenciesRes.convention(false)
         includeDependenciesDex.convention(false)
         includeDependenciesAssets.convention(false)
         includeDependenciesJni.convention(false)
+        minifyRelease.convention(false)
+        minApi.convention(21)
+        hostProvidedPatterns.convention(emptyList())
+        hostProvidedClassPrefixes.convention(emptyList())
+        extraRPackages.convention(emptyList())
     }
 
     /** 一个便捷的辅助方法，用于一键开启所有依赖打包 */

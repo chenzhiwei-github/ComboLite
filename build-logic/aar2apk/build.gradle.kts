@@ -23,8 +23,13 @@ plugins {
     alias(buildLibs.plugins.gradle.plugin.publish)
 }
 
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
 tasks.withType<KotlinCompile>().configureEach {
-    compilerOptions.jvmTarget.set(JvmTarget.JVM_21)
+    compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
 }
 
 dependencies {
@@ -35,7 +40,7 @@ dependencies {
 
 gradlePlugin {
     group = "io.github.lnzz123"
-    version = "1.1.1"
+    version = "1.1.2-xj.2"
     website = "https://github.com/lnzz123/combolite"
     vcsUrl = "https://github.com/lnzz123/combolite.git"
     plugins {

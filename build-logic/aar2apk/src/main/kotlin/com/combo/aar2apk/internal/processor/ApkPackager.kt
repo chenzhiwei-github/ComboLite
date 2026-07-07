@@ -30,11 +30,28 @@ internal class ApkPackager(
     /**
      * 将 DEX 文件添加到 APK 的根目录。
      */
-    fun addDex(apkFile: File, dexFile: File?) {
-        if (dexFile == null || !dexFile.exists()) return
-        logger.log("步骤4.1: 添加DEX文件到APK") // 调整了日志步骤编号，使其更连贯
+    fun addDex(apkFile: File, dexFiles: List<File>) {
+        val existingDexFiles = dexFiles.filter { it.exists() }
+        if (existingDexFiles.isEmpty()) return
+        logger.log("步骤4.1: 添加 ${existingDexFiles.size} 个DEX文件到APK")
+        val command = mutableListOf("jar", "uf", apkFile.absolutePath)
+        existingDexFiles.forEach { dexFile ->
+            command.add("-C")
+            command.add(dexFile.parent)
+            command.add(dexFile.name)
+        }
+        shellExecutor.execute(command)
+    }
+
+    /**
+     * 将合并后的 META-INF/services 目录添加到 APK。
+     */
+    fun addMetaInfServices(apkFile: File, servicesStagingDir: File) {
+        val servicesDir = File(servicesStagingDir, "META-INF/services")
+        if (!servicesDir.isDirectory || servicesDir.listFiles().isNullOrEmpty()) return
+        logger.log("步骤4.4: 添加META-INF/services到APK")
         shellExecutor.execute(
-            listOf("jar", "uf", apkFile.absolutePath, "-C", dexFile.parent, dexFile.name)
+            listOf("jar", "uf", apkFile.absolutePath, "-C", servicesStagingDir.absolutePath, "META-INF")
         )
     }
 

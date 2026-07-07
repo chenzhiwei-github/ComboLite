@@ -39,7 +39,8 @@ internal class ResourceProcessor(
         remoteAars: Set<File>,
         localResDirs: Set<File>,
         packageId: String,
-        workDir: File
+        workDir: File,
+        extraPackages: List<String> = emptyList()
     ): LinkedResources? {
         val manifestFile = File(extractDir, "AndroidManifest.xml")
         if (!manifestFile.exists()) {
@@ -62,7 +63,7 @@ internal class ResourceProcessor(
         // 4. 链接所有资源
         val allCompiledResourceDirs =
             listOfNotNull(mainCompiledResDir) + remoteCompiledResDirs + localCompiledResDirs
-        return linkResources(allCompiledResourceDirs, manifestFile, packageId, buildDir)
+        return linkResources(allCompiledResourceDirs, manifestFile, packageId, buildDir, extraPackages)
     }
 
     private fun compileAarDependencyResources(
@@ -140,7 +141,8 @@ internal class ResourceProcessor(
         compiledResourceDirs: List<File>,
         manifestFile: File,
         packageId: String,
-        buildDir: File
+        buildDir: File,
+        extraPackages: List<String>
     ): LinkedResources {
         logger.log("步骤3: 使用 aapt2 link 链接所有资源并生成R.java")
         val rJavaSourcesDir = File(buildDir, "gen_java")
@@ -166,6 +168,11 @@ internal class ResourceProcessor(
             "--no-version-vectors",
             "--no-static-lib-packages"
         )
+
+        if (extraPackages.isNotEmpty()) {
+            command.add("--extra-packages")
+            command.add(extraPackages.joinToString(":"))
+        }
 
         command.add("-R")
         command.add("@${responseFile.absolutePath}")

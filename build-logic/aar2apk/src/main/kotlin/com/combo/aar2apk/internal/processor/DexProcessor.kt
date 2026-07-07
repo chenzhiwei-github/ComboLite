@@ -32,14 +32,19 @@ internal class DexProcessor(
     /**
      * @param allJarFiles 包含主模块和所有依赖库的 .jar 文件集合
      * @param rJavaSourcesDir aapt2 link 生成的 R.java 源码目录
-     * @return 生成的 classes.dex 文件
+     * @return 生成的全部 classes*.dex 文件
      */
     fun process(
         allJarFiles: Set<File>,
         rJavaSourcesDir: File?,
         buildType: String,
-        workDir: File
-    ): File? {
+        workDir: File,
+        minify: Boolean = false,
+        minApi: Int = 21,
+        proguardFiles: Collection<File> = emptyList(),
+        classpathFiles: Collection<File> = emptyList(),
+        mappingOutput: File? = null,
+    ): List<File> {
         logger.log("步骤4: 编译Java/Kotlin代码并转换为DEX")
         val buildDir = File(workDir, "build")
         val rJavaFiles =
@@ -49,7 +54,7 @@ internal class DexProcessor(
         // 如果没有任何代码，则跳过
         if (allJarFiles.isEmpty() && rJavaFiles.isEmpty()) {
             logger.log("⚠️ 未找到任何JAR或R.java文件，跳过DEX转换。")
-            return null
+            return emptyList()
         }
 
         // 编译 R.java (如果存在)
@@ -59,7 +64,90 @@ internal class DexProcessor(
 
         // 将编译后的 R.jar 和其他所有 jar 文件合并，一起转换为 DEX
         val jarsToDex = allJarFiles + listOfNotNull(rClassesJar)
-        return convertToDex(jarsToDex, buildType, buildDir)
+        return if (minify && buildType == "release") {
+            minifyToDex(jarsToDex, minApi, proguardFiles, classpathFiles, mappingOutput, buildDir)
+        } else {
+            convertToDex(jarsToDex, buildType, minApi, buildDir)
+        }
+    }
+
+    private fun minifyToDex(
+        jarFiles: Collection<File>,
+        minApi: Int,
+        proguardFiles: Collection<File>,
+        classpathFiles: Collection<File>,
+        mappingOutput: File?,
+        buildDir: File
+    ): List<File> {
+        logger.log("  使用 R8 对 ${jarFiles.size} 个 JAR 进行混淆并转换为 DEX...")
+        val dexOutputDir = File(buildDir, "dex_output")
+        dexOutputDir.deleteRecursively()
+        dexOutputDir.mkdirs()
+
+        val d8Jar = File(sdkInfo.sdkPath, "build-tools/${sdkInfo.buildToolsVersion}/lib/d8.jar")
+        if (!d8Jar.isFile) throw IllegalStateException("R8 所需的 d8.jar 不存在: ${d8Jar.absolutePath}")
+
+        val classpathJars = classpathFiles.flatMap { resolveClasspathJars(it, buildDir) }
+        val mapping = mappingOutput ?: File(buildDir, "r8-mapping.txt")
+        mapping.parentFile?.mkdirs()
+
+        val command = mutableListOf(
+            "java", "-Xmx4g",
+            "-cp", d8Jar.absolutePath,
+            "com.android.tools.r8.R8",
+            "--release",
+            "--pg-compat",
+            "--min-api", minApi.toString(),
+            "--lib", sdkInfo.androidJar.absolutePath,
+            "--output", dexOutputDir.absolutePath,
+            "--pg-map-output", mapping.absolutePath,
+        )
+        classpathJars.forEach {
+            command.add("--classpath")
+            command.add(it.absolutePath)
+        }
+        proguardFiles.filter { it.isFile }.forEach {
+            command.add("--pg-conf")
+            command.add(it.absolutePath)
+        }
+        jarFiles.forEach { command.add(it.absolutePath) }
+        shellExecutor.execute(command)
+
+        val dexFiles = collectDexFiles(dexOutputDir)
+        if (dexFiles.isEmpty()) throw IllegalStateException("R8 混淆失败，未生成任何dex文件。")
+        logger.log("  R8 混淆完成，生成 ${dexFiles.size} 个dex，mapping: ${mapping.absolutePath}")
+        return dexFiles
+    }
+
+    private fun collectDexFiles(dexOutputDir: File): List<File> {
+        val dexNameRegex = Regex("classes\\d*\\.dex")
+        return dexOutputDir.listFiles { file -> dexNameRegex.matches(file.name) }
+            ?.sortedBy { file ->
+                file.name.removePrefix("classes").removeSuffix(".dex").toIntOrNull() ?: 1
+            }
+            ?: emptyList()
+    }
+
+    private fun resolveClasspathJars(file: File, buildDir: File): List<File> {
+        if (!file.exists()) return emptyList()
+        if (file.extension != "aar") return listOf(file)
+        val outDir = File(buildDir, "classpath_aars/${file.nameWithoutExtension}")
+        outDir.deleteRecursively()
+        outDir.mkdirs()
+        val jars = mutableListOf<File>()
+        java.util.zip.ZipFile(file).use { zip ->
+            for (entry in zip.entries()) {
+                val isClassesJar = entry.name == "classes.jar"
+                val isLibJar = entry.name.startsWith("libs/") && entry.name.endsWith(".jar")
+                if (!isClassesJar && !isLibJar) continue
+                val target = File(outDir, entry.name.replace('/', '_'))
+                zip.getInputStream(entry).use { input ->
+                    target.outputStream().use { output -> input.copyTo(output) }
+                }
+                jars.add(target)
+            }
+        }
+        return jars
     }
 
     private fun compileRJava(sourceDir: File, buildDir: File): File {
@@ -92,7 +180,12 @@ internal class DexProcessor(
         return rClassesJar
     }
 
-    private fun convertToDex(jarFiles: Collection<File>, buildType: String, buildDir: File): File {
+    private fun convertToDex(
+        jarFiles: Collection<File>,
+        buildType: String,
+        minApi: Int,
+        buildDir: File
+    ): List<File> {
         logger.log("  使用 D8 将 ${jarFiles.size} 个 JAR 文件转换为 DEX...")
         val dexOutputDir = File(buildDir, "dex_output")
         dexOutputDir.deleteRecursively()
@@ -100,7 +193,7 @@ internal class DexProcessor(
 
         val command = mutableListOf(
             sdkInfo.getTool("d8"),
-            "--min-api", "21",
+            "--min-api", minApi.toString(),
             "--output", dexOutputDir.absolutePath
         )
         if (buildType == "release") {
@@ -109,8 +202,8 @@ internal class DexProcessor(
         jarFiles.forEach { command.add(it.absolutePath) }
         shellExecutor.execute(command)
 
-        val classesDex = File(dexOutputDir, "classes.dex")
-        if (!classesDex.exists()) throw IllegalStateException("DEX转换失败，未生成classes.dex文件。")
-        return classesDex
+        val dexFiles = collectDexFiles(dexOutputDir)
+        if (dexFiles.isEmpty()) throw IllegalStateException("DEX转换失败，未生成任何dex文件。")
+        return dexFiles
     }
 }
