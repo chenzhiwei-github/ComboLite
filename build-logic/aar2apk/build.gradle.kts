@@ -40,7 +40,7 @@ dependencies {
 
 gradlePlugin {
     group = "io.github.lnzz123"
-    version = "1.1.2-xj.2"
+    version = "1.1.2-xj.3"
     website = "https://github.com/lnzz123/combolite"
     vcsUrl = "https://github.com/lnzz123/combolite.git"
     plugins {

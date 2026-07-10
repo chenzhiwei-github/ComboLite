@@ -1,7 +1,7 @@
 # xiaoji fork 变更说明
 
 基线：上游 master `f4d4524`（combolite-core 2.0.2 / aar2apk 1.1.1），分支 `xiaoji/child-first`。
-当前版本：**combolite-core `2.0.2-xj.2`**、**aar2apk `1.1.2-xj.2`**（坐标沿用 `io.github.lnzz123`，仅版本加 `-xj` 后缀）。
+当前版本：**combolite-core `2.0.2-xj.2`**、**aar2apk `1.1.2-xj.3`**（坐标沿用 `io.github.lnzz123`，仅版本加 `-xj` 后缀）。
 
 发布方式：本地 maven（正式交付方式待定）
 
@@ -32,7 +32,7 @@
 
 ---
 
-## build-logic/aar2apk（1.1.2-xj.2）
+## build-logic/aar2apk（1.1.2-xj.3）
 
 ### xj.1 已有
 
@@ -60,3 +60,7 @@
 
 - 所有新 DSL 均有空默认值；不配置时（如仓内 sample-plugin）行为与上游一致，已用 sample 全量 debug/release 打包冒烟验证。
 - `ConvertAarToApkTask` 任务属性 `remoteDependencyAars` 更名为 `remoteProgramArtifacts`（语义变化：aar+jar 混合、仅 program 侧）。
+
+### xj.3 新增
+
+- `DexProcessor` 的 D8/R8 调用改为 `@argfile` 参数文件模式。插件聚合大量本地模块和 Maven 依赖时，Windows 不再因为 `d8.bat` 命令行参数过长而在 `convert_<module>_<buildType>` 阶段失败。

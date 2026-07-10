@@ -91,10 +91,7 @@ internal class DexProcessor(
         val mapping = mappingOutput ?: File(buildDir, "r8-mapping.txt")
         mapping.parentFile?.mkdirs()
 
-        val command = mutableListOf(
-            "java", "-Xmx4g",
-            "-cp", d8Jar.absolutePath,
-            "com.android.tools.r8.R8",
+        val r8Args = mutableListOf(
             "--release",
             "--pg-compat",
             "--min-api", minApi.toString(),
@@ -103,14 +100,21 @@ internal class DexProcessor(
             "--pg-map-output", mapping.absolutePath,
         )
         classpathJars.forEach {
-            command.add("--classpath")
-            command.add(it.absolutePath)
+            r8Args.add("--classpath")
+            r8Args.add(it.absolutePath)
         }
         proguardFiles.filter { it.isFile }.forEach {
-            command.add("--pg-conf")
-            command.add(it.absolutePath)
+            r8Args.add("--pg-conf")
+            r8Args.add(it.absolutePath)
         }
-        jarFiles.forEach { command.add(it.absolutePath) }
+        jarFiles.forEach { r8Args.add(it.absolutePath) }
+        val r8ArgFile = writeToolArgFile("r8", r8Args, buildDir)
+        val command = listOf(
+            "java", "-Xmx4g",
+            "-cp", d8Jar.absolutePath,
+            "com.android.tools.r8.R8",
+            "@${r8ArgFile.absolutePath}",
+        )
         shellExecutor.execute(command)
 
         val dexFiles = collectDexFiles(dexOutputDir)
@@ -191,19 +195,32 @@ internal class DexProcessor(
         dexOutputDir.deleteRecursively()
         dexOutputDir.mkdirs()
 
-        val command = mutableListOf(
-            sdkInfo.getTool("d8"),
+        val d8Args = mutableListOf(
             "--min-api", minApi.toString(),
             "--output", dexOutputDir.absolutePath
         )
         if (buildType == "release") {
-            command.add("--release")
+            d8Args.add("--release")
         }
-        jarFiles.forEach { command.add(it.absolutePath) }
+        jarFiles.forEach { d8Args.add(it.absolutePath) }
+        val d8ArgFile = writeToolArgFile("d8", d8Args, buildDir)
+        val command = listOf(sdkInfo.getTool("d8"), "@${d8ArgFile.absolutePath}")
         shellExecutor.execute(command)
 
         val dexFiles = collectDexFiles(dexOutputDir)
         if (dexFiles.isEmpty()) throw IllegalStateException("DEX转换失败，未生成任何dex文件。")
         return dexFiles
+    }
+
+    private fun writeToolArgFile(
+        toolName: String,
+        args: List<String>,
+        buildDir: File
+    ): File {
+        val argFile = File(buildDir, "$toolName-args.txt")
+        argFile.parentFile?.mkdirs()
+        argFile.writeText(args.joinToString(separator = "\n", postfix = "\n"))
+        logger.log("  ${toolName.uppercase()} 参数文件: ${argFile.absolutePath} (${args.size} args)")
+        return argFile
     }
 }
