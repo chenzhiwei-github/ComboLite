@@ -36,6 +36,7 @@ class Aar2ApkPlugin : Plugin<Project> {
         private const val GROUP_MAIN = "Plugin APKs"
         private const val GROUP_DEBUG_BUILDS = "Plugin APKs - Debug Builds"
         private const val GROUP_RELEASE_BUILDS = "Plugin APKs - Release Builds"
+        private const val R8_COORDINATE = "com.android.tools.build:builder:9.2.1"
     }
 
     override fun apply(project: Project) {
@@ -53,13 +54,18 @@ class Aar2ApkPlugin : Plugin<Project> {
      */
     private fun applyToRootProject(project: Project) {
         val extension = project.extensions.create("aar2apk", Aar2ApkExtension::class.java)
+        val r8Classpath = project.configurations.detachedConfiguration(
+            project.dependencies.create(R8_COORDINATE)
+        ).apply {
+            isTransitive = false
+        }
 
         project.afterEvaluate {
             if (extension.moduleConfigs.modules.isNotEmpty()) {
                 extension.moduleConfigs.modules.forEach { config ->
                     project.evaluationDependsOn(config.path)
                 }
-                configurePluginBuildTasks(project, extension)
+                configurePluginBuildTasks(project, extension, r8Classpath)
             } else {
                 project.logger.info("Aar2ApkPlugin: 未在 aar2apk.modules 中配置任何模块，跳过任务创建。")
             }
@@ -69,7 +75,11 @@ class Aar2ApkPlugin : Plugin<Project> {
     /**
      * 在根项目中配置所有插件构建任务
      */
-    private fun configurePluginBuildTasks(project: Project, extension: Aar2ApkExtension) {
+    private fun configurePluginBuildTasks(
+        project: Project,
+        extension: Aar2ApkExtension,
+        r8Classpath: org.gradle.api.artifacts.Configuration,
+    ) {
         val sdkPath = SdkLocator.getSdkPath(project)
         val buildToolsVersion = SdkLocator.findLatestBuildTools(sdkPath)
         val platformVersion = SdkLocator.findLatestPlatform(sdkPath)
@@ -108,6 +118,7 @@ class Aar2ApkPlugin : Plugin<Project> {
                     this.packagingOptions.set(options)
                     this.minify.set(options.minifyRelease.map { it && buildType == "release" })
                     this.minApi.set(options.minApi)
+                    this.r8Classpath.from(r8Classpath)
                     this.minifyProguardFiles.from(options.proguardFiles)
                     this.minifyClasspathFiles.from(options.classpathFiles)
 

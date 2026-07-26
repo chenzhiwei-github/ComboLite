@@ -35,6 +35,7 @@ import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.ListProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.CacheableTask
+import org.gradle.api.tasks.Classpath
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.InputFiles
@@ -80,6 +81,9 @@ abstract class ConvertAarToApkTask @Inject constructor(
 
     @get:Input
     abstract val minApi: Property<Int>
+
+    @get:Classpath
+    abstract val r8Classpath: ConfigurableFileCollection
 
     @get:InputFiles
     @get:PathSensitive(PathSensitivity.RELATIVE)
@@ -221,7 +225,12 @@ abstract class ConvertAarToApkTask @Inject constructor(
             val servicesKeepRules =
                 mergeMetaInfServices(allClassJars, servicesStagingDir, workDir.resolve("build"), logger)
 
-            val dexProcessor = DexProcessor(shellExecutor, sdk, logger)
+            val dexProcessor = DexProcessor(
+                shellExecutor = shellExecutor,
+                sdkInfo = sdk,
+                logger = logger,
+                r8Jar = r8Classpath.singleFile,
+            )
             val dexFiles = dexProcessor.process(
                 allClassJars,
                 linkedResources.rJavaSourcesDir,
@@ -234,6 +243,12 @@ abstract class ConvertAarToApkTask @Inject constructor(
                 classpathFiles = hostProvidedClasspath.files + minifyClasspathFiles.files,
                 mappingOutput = outputDirectory.get()
                     .file("${pluginName.get()}-${buildType.get()}-mapping.txt").asFile,
+                usageOutput = outputDirectory.get()
+                    .file("${pluginName.get()}-${buildType.get()}-usage.txt").asFile,
+                configurationOutput = outputDirectory.get()
+                    .file("${pluginName.get()}-${buildType.get()}-configuration.txt").asFile,
+                seedsOutput = outputDirectory.get()
+                    .file("${pluginName.get()}-${buildType.get()}-seeds.txt").asFile,
             )
 
             // --- 4. 打包 ---

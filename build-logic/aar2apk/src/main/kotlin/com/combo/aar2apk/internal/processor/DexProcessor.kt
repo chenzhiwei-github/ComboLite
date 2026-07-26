@@ -27,7 +27,8 @@ import java.io.File
 internal class DexProcessor(
     private val shellExecutor: ShellExecutor,
     private val sdkInfo: SdkInfo,
-    private val logger: TaskLogger
+    private val logger: TaskLogger,
+    private val r8Jar: File,
 ) {
     /**
      * @param allJarFiles 包含主模块和所有依赖库的 .jar 文件集合
@@ -44,6 +45,9 @@ internal class DexProcessor(
         proguardFiles: Collection<File> = emptyList(),
         classpathFiles: Collection<File> = emptyList(),
         mappingOutput: File? = null,
+        usageOutput: File? = null,
+        configurationOutput: File? = null,
+        seedsOutput: File? = null,
     ): List<File> {
         logger.log("步骤4: 编译Java/Kotlin代码并转换为DEX")
         val buildDir = File(workDir, "build")
@@ -65,7 +69,17 @@ internal class DexProcessor(
         // 将编译后的 R.jar 和其他所有 jar 文件合并，一起转换为 DEX
         val jarsToDex = allJarFiles + listOfNotNull(rClassesJar)
         return if (minify && buildType == "release") {
-            minifyToDex(jarsToDex, minApi, proguardFiles, classpathFiles, mappingOutput, buildDir)
+            minifyToDex(
+                jarFiles = jarsToDex,
+                minApi = minApi,
+                proguardFiles = proguardFiles,
+                classpathFiles = classpathFiles,
+                mappingOutput = mappingOutput,
+                usageOutput = usageOutput,
+                configurationOutput = configurationOutput,
+                seedsOutput = seedsOutput,
+                buildDir = buildDir,
+            )
         } else {
             convertToDex(jarsToDex, buildType, minApi, buildDir)
         }
@@ -77,27 +91,49 @@ internal class DexProcessor(
         proguardFiles: Collection<File>,
         classpathFiles: Collection<File>,
         mappingOutput: File?,
-        buildDir: File
+        usageOutput: File?,
+        configurationOutput: File?,
+        seedsOutput: File?,
+        buildDir: File,
     ): List<File> {
-        logger.log("  使用 R8 对 ${jarFiles.size} 个 JAR 进行混淆并转换为 DEX...")
+        logger.log("  使用 R8 Full Mode 对 ${jarFiles.size} 个 JAR 进行混淆并转换为 DEX...")
         val dexOutputDir = File(buildDir, "dex_output")
         dexOutputDir.deleteRecursively()
         dexOutputDir.mkdirs()
 
-        val d8Jar = File(sdkInfo.sdkPath, "build-tools/${sdkInfo.buildToolsVersion}/lib/d8.jar")
-        if (!d8Jar.isFile) throw IllegalStateException("R8 所需的 d8.jar 不存在: ${d8Jar.absolutePath}")
+        check(r8Jar.isFile) {
+            "固定 R8 运行库不是文件: ${r8Jar.absolutePath}"
+        }
+        logger.log("  使用固定 R8 运行库: ${r8Jar.absolutePath}")
 
         val classpathJars = classpathFiles.flatMap { resolveClasspathJars(it, buildDir) }
         val mapping = mappingOutput ?: File(buildDir, "r8-mapping.txt")
-        mapping.parentFile?.mkdirs()
+        val usage = usageOutput ?: File(buildDir, "r8-usage.txt")
+        val configuration = configurationOutput ?: File(buildDir, "r8-configuration.txt")
+        val seeds = seedsOutput ?: File(buildDir, "r8-seeds.txt")
+        listOf(mapping, usage, configuration, seeds).forEach { output ->
+            output.parentFile?.mkdirs()
+            output.delete()
+        }
+
+        val fullModeRules = File(buildDir, "r8-full-mode.pro").apply {
+            writeText(
+                """
+                # aar2apk final shrinker deliberately uses R8 Full Mode.
+                -allowaccessmodification
+                -printusage ${asProguardPath(usage)}
+                -printseeds ${asProguardPath(seeds)}
+                """.trimIndent() + "\n"
+            )
+        }
 
         val r8Args = mutableListOf(
             "--release",
-            "--pg-compat",
             "--min-api", minApi.toString(),
             "--lib", sdkInfo.androidJar.absolutePath,
             "--output", dexOutputDir.absolutePath,
             "--pg-map-output", mapping.absolutePath,
+            "--pg-conf-output", configuration.absolutePath,
         )
         classpathJars.forEach {
             r8Args.add("--classpath")
@@ -107,11 +143,13 @@ internal class DexProcessor(
             r8Args.add("--pg-conf")
             r8Args.add(it.absolutePath)
         }
+        r8Args.add("--pg-conf")
+        r8Args.add(fullModeRules.absolutePath)
         jarFiles.forEach { r8Args.add(it.absolutePath) }
         val r8ArgFile = writeToolArgFile("r8", r8Args, buildDir)
         val command = listOf(
             "java", "-Xmx4g",
-            "-cp", d8Jar.absolutePath,
+            "-cp", r8Jar.absolutePath,
             "com.android.tools.r8.R8",
             "@${r8ArgFile.absolutePath}",
         )
@@ -119,9 +157,20 @@ internal class DexProcessor(
 
         val dexFiles = collectDexFiles(dexOutputDir)
         if (dexFiles.isEmpty()) throw IllegalStateException("R8 混淆失败，未生成任何dex文件。")
-        logger.log("  R8 混淆完成，生成 ${dexFiles.size} 个dex，mapping: ${mapping.absolutePath}")
+        listOf(mapping, usage, configuration, seeds).forEach { output ->
+            check(output.isFile) {
+                "R8 未生成预期输出: ${output.absolutePath}"
+            }
+        }
+        logger.log(
+            "  R8 Full Mode 完成，生成 ${dexFiles.size} 个dex，" +
+                "mapping/usage/configuration/seeds 已输出到 ${mapping.parentFile?.absolutePath}"
+        )
         return dexFiles
     }
+
+    private fun asProguardPath(file: File): String =
+        "'${file.absolutePath.replace("\\", "\\\\").replace("'", "\\'")}'"
 
     private fun collectDexFiles(dexOutputDir: File): List<File> {
         val dexNameRegex = Regex("classes\\d*\\.dex")
