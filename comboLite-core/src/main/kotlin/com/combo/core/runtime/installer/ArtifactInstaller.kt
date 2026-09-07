@@ -11,7 +11,6 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.FileInputStream
-import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.RandomAccessFile
 import java.security.MessageDigest
@@ -173,7 +172,7 @@ internal class ArtifactInstaller(private val application: Application) {
         try {
             val stat = Os.fstat(fd)
             check(OsConstants.S_ISREG(stat.st_mode) && stat.st_nlink == 1L)
-            return FileInputStream(fd)
+            return OwnedDescriptorInputStream(fd)
         } catch (e: Throwable) {
             Os.close(fd)
             throw e
@@ -183,7 +182,11 @@ internal class ArtifactInstaller(private val application: Application) {
     private fun writeNew(file: File, input: InputStream, limit: Long) {
         input.use { source ->
             val fd = Os.open(file.path, OsConstants.O_WRONLY or OsConstants.O_CREAT or OsConstants.O_EXCL or OsConstants.O_NOFOLLOW, 384)
-            FileOutputStream(fd).use { output ->
+            val ownedOutput = try { OwnedDescriptorOutputStream(fd) } catch (failure: Throwable) {
+                if (fd.valid()) Os.close(fd)
+                throw failure
+            }
+            ownedOutput.use { output ->
                 val buffer = ByteArray(64 * 1024)
                 var count = 0L
                 while (true) {

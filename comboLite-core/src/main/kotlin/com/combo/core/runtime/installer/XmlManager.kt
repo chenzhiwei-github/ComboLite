@@ -251,7 +251,7 @@ class XmlManager @JvmOverloads constructor(
         val fd = Os.open(pluginsConfigFile.path, OsConstants.O_RDONLY or OsConstants.O_NOFOLLOW, 0)
         try {
             check(OsConstants.S_ISREG(Os.fstat(fd).st_mode)) { "Registry must be a regular file" }
-            return FileInputStream(fd)
+            return OwnedDescriptorInputStream(fd)
         } catch (e: Throwable) {
             Os.close(fd)
             throw e
