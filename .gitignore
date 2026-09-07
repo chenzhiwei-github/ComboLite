@@ -15,3 +15,7 @@ build/
 .externalNativeBuild
 .cxx
 local.properties
+
+# Source-only fork build outputs
+**/build/
+**/.kotlin/

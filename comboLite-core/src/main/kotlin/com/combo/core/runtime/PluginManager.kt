@@ -28,8 +28,8 @@ import com.combo.core.runtime.InitState.NOT_INITIALIZED
 import com.combo.core.runtime.ValidationStrategy.Insecure
 import com.combo.core.runtime.ValidationStrategy.Strict
 import com.combo.core.runtime.ValidationStrategy.UserGrant
-import com.combo.core.runtime.installer.InstallerManager
 import com.combo.core.runtime.loader.PluginClassLoadingPolicy
+import com.combo.core.runtime.installer.InstallerManager
 import com.combo.core.runtime.resource.PluginResourcesManager
 import com.combo.core.security.auth.AuthorizationManager
 import com.combo.core.security.permission.PermissionLevel
@@ -97,6 +97,8 @@ object PluginManager {
 
     val classLoadingPolicy: PluginClassLoadingPolicy
         get() = requireContext().classLoadingPolicy
+    val registryAccessMode: RegistryAccessMode
+        get() = requireContext().registryAccessMode
 
     val installerManager: InstallerManager
         get() = requireContext().installerManager
@@ -125,10 +127,26 @@ object PluginManager {
      * @param onSetup 可选的插件加载代码块，用于在初始化完成后加载插件。
      */
     @Synchronized
+    fun initialize(context: Application) =
+        initialize(context, PluginClassLoadingPolicy.ParentFirst, null)
+
+    @Synchronized
+    fun initialize(context: Application, onSetup: (suspend () -> Unit)?) =
+        initialize(context, PluginClassLoadingPolicy.ParentFirst, onSetup)
+
+    @Synchronized
     fun initialize(
         context: Application,
         classLoadingPolicy: PluginClassLoadingPolicy = PluginClassLoadingPolicy.ParentFirst,
-        onSetup: (suspend () -> Unit)? = null
+        onSetup: (suspend () -> Unit)? = null,
+    ) = initialize(context, classLoadingPolicy, RegistryAccessMode.READ_ONLY_FAIL_CLOSED, onSetup)
+
+    @Synchronized
+    fun initialize(
+        context: Application,
+        classLoadingPolicy: PluginClassLoadingPolicy,
+        registryAccessMode: RegistryAccessMode,
+        onSetup: (suspend () -> Unit)?,
     ) {
         if (frameworkContext != null && frameworkContext?.initState?.value != InitState.NOT_INITIALIZED) {
             Timber.Forest.tag(TAG).w("PluginManager 正在初始化或已完成，跳过重复操作。")
@@ -136,10 +154,12 @@ object PluginManager {
         }
 
         frameworkContext = PluginFrameworkContext(context, classLoadingPolicy)
+        requireContext().configureRegistryAccessMode(registryAccessMode)
         requireContext().initState.value = INITIALIZING
 
         try {
             Timber.Forest.tag(TAG).i("开始初始化 PluginManager 核心组件...")
+            // Exact artifact loading never consults the legacy global registry.
             startKoin { androidContext(context) }
         } catch (e: Exception) {
             Timber.Forest.tag(TAG).e(e, "PluginManager 初始化失败: ${e.message}")
@@ -191,6 +211,13 @@ object PluginManager {
             return false
         }
         return requireContext().lifecycleManager.launchPlugin(pluginId)
+    }
+
+    /** Load only the exact installed artifact authorized for this process. Never selects plugins.xml. */
+    @RequiresPermission(PermissionLevel.HOST, hardFail = true)
+    suspend fun launchArtifact(pluginInfo: PluginInfo, expectedSha256: String): Boolean {
+        if (::launchArtifact.javaMethod?.checkApiCaller() == false) return false
+        return requireContext().lifecycleManager.launchArtifact(pluginInfo, expectedSha256)
     }
 
     /**
@@ -314,6 +341,7 @@ object PluginManager {
      */
     @RequiresPermission(PermissionLevel.HOST)
     suspend fun setPluginEnabled(pluginId: String, enabled: Boolean): Boolean {
+        registryAccessMode.requireMutable("setPluginEnabled")
         if (::setPluginEnabled.javaMethod?.checkApiCaller(targetPluginId = pluginId) == false) {
             Timber.w("权限不足：插件状态设置操作被拒绝 [pluginId: $pluginId]")
             return false

@@ -19,6 +19,8 @@ package com.combo.core.model
 import android.app.Application
 import com.combo.core.api.IPluginEntryClass
 import com.combo.core.proxy.ProxyManager
+import com.combo.core.runtime.RegistryAccessMode
+import com.combo.core.runtime.loader.PluginClassLoadingPolicy
 import com.combo.core.runtime.InitState
 import com.combo.core.runtime.ValidationStrategy
 import com.combo.core.runtime.installer.InstallerManager
@@ -50,8 +52,20 @@ internal data class PluginFrameworkContext(
     var validationStrategy: ValidationStrategy = ValidationStrategy.Strict
 
     // 核心管理器实例
-    val xmlManager: XmlManager = XmlManager(application)
-    val installerManager: InstallerManager = InstallerManager(application, xmlManager)
+    private var registryModeConfigured = false
+    var registryAccessMode = RegistryAccessMode.READ_ONLY_FAIL_CLOSED
+        private set
+    internal fun configureRegistryAccessMode(mode: RegistryAccessMode) {
+        check(!registryModeConfigured) { "Registry mode is already frozen" }
+        registryAccessMode = mode
+        registryModeConfigured = true
+    }
+    val xmlManager: XmlManager by lazy {
+        check(registryModeConfigured)
+        XmlManager(application, registryAccessMode)
+    }
+    val installerManager: InstallerManager by lazy { InstallerManager(application, xmlManager) }
+    internal fun initializeRegistryManagers() { installerManager }
     val resourcesManager: PluginResourcesManager = PluginResourcesManager(application)
     val proxyManager: ProxyManager = ProxyManager(application)
     val lifecycleManager: PluginLifecycleManager = PluginLifecycleManager(this)

@@ -33,6 +33,7 @@ import com.combo.core.security.permission.PermissionLevel
 import com.combo.core.security.permission.RequiresPermission
 import com.combo.core.security.permission.checkApiCaller
 import com.combo.core.security.signature.SignatureValidator
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -135,6 +136,7 @@ class InstallerManager(
         pluginApkFile: File,
         forceOverwrite: Boolean = false,
     ): InstallResult = withContext(Dispatchers.IO) {
+        xmlManager.registryAccessMode.requireMutable("installPlugin")
         if (::installPlugin.javaMethod?.checkApiCaller() == false) {
             Timber.w("权限不足：插件安装操作被拒绝")
             return@withContext InstallResult.Failure("权限不足")
@@ -252,6 +254,57 @@ class InstallerManager(
         }
     }
 
+    /** Immutable installation. The Authority owns the root, intent, OS lock and cleanup. */
+    @RequiresPermission(PermissionLevel.HOST, hardFail = true)
+    suspend fun installArtifact(
+        pluginApkFile: File,
+        artifactDirectory: File,
+        expectedPluginId: String,
+        expectedVersionCode: Long,
+        expectedSha256: String,
+    ): InstallResult = withContext(Dispatchers.IO) {
+        xmlManager.registryAccessMode.requireMutable("installArtifact")
+        if (::installArtifact.javaMethod?.checkApiCaller() == false) {
+            return@withContext InstallResult.Failure("Artifact installation denied")
+        }
+        try {
+            InstallResult.Success(ArtifactInstaller(context).install(
+                pluginApkFile, artifactDirectory, expectedPluginId, expectedVersionCode, expectedSha256,
+                parse = { apk ->
+                    val config = requireNotNull(validateAndParseConfig(apk)) { "Invalid APK metadata" }
+                    val signature = checkSignatureAndAuthorize(apk, config)
+                    check(signature.isSuccess) { signature.reason }
+                    PluginInfo(config.id, config.name, config.iconResId, config.versionCode,
+                        config.pluginVersionName, apk.path, config.entryClass, config.pluginDescription,
+                        true, System.currentTimeMillis(), parseStaticReceivers(apk.path), parseProviders(apk.path))
+                },
+                createIndex = ::createClassIndex,
+            ))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            InstallResult.Failure("Immutable artifact installation failed: ${e.message}", e)
+        }
+    }
+
+    /** Read-only complete-tree validation; never opens plugins.xml or loads plugin code. */
+    fun inspectArtifact(
+        artifactDirectory: File,
+        expectedPluginId: String,
+        expectedVersionCode: Long,
+        expectedSha256: String,
+    ): PluginInfo {
+        val info = ArtifactInstaller(context).inspect(
+            artifactDirectory, expectedPluginId, expectedVersionCode, expectedSha256,
+        )
+        val config = requireNotNull(validateAndParseConfig(File(info.path))) { "Invalid installed APK metadata" }
+        check(config.id == info.id && config.versionCode == info.versionCode &&
+            config.entryClass == info.entryClass && config.pluginVersionName == info.versionName) {
+            "Installed artifact record differs from APK metadata"
+        }
+        return info
+    }
+
     /**
      * 卸载一个插件。
      * 这是一个事务性操作，会先将插件目录重命名，删除成功后再更新配置文件，以保证操作的原子性。
@@ -263,6 +316,7 @@ class InstallerManager(
      */
     @RequiresPermission(PermissionLevel.SELF)
     suspend fun uninstallPlugin(pluginId: String): Boolean {
+        xmlManager.registryAccessMode.requireMutable("uninstallPlugin")
         if (::uninstallPlugin.javaMethod?.checkApiCaller(pluginId) == false) {
             Timber.w("权限不足：插件卸载操作被拒绝")
             return false
@@ -470,12 +524,13 @@ class InstallerManager(
     private fun parseStaticReceivers(apkPath: String): List<StaticReceiverInfo> {
         Timber.tag(TAG).d("开始解析 StaticReceivers: $apkPath")
         var parser: XmlResourceParser? = null
+        var assetManager: AssetManager? = null
         try {
-            val assetManager = AssetManager::class.java.getDeclaredConstructor().newInstance()
+            assetManager = AssetManager::class.java.getDeclaredConstructor().newInstance()
             val addAssetPathMethod =
                 AssetManager::class.java.getMethod("addAssetPath", String::class.java)
             val cookie = addAssetPathMethod.invoke(assetManager, apkPath) as Int
-            if (cookie == 0) return emptyList()
+            check(cookie != 0) { "Cannot load plugin manifest resources" }
 
             parser = assetManager.openXmlResourceParser(cookie, "AndroidManifest.xml")
             val receivers = mutableListOf<StaticReceiverInfo>()
@@ -563,10 +618,10 @@ class InstallerManager(
             }
             return receivers
         } catch (e: Exception) {
-            Timber.tag(TAG).e(e, "使用 AXmlResourceParser 解析静态广播失败: $apkPath")
-            return emptyList()
+            throw IOException("Cannot parse plugin static receivers: $apkPath", e)
         } finally {
             parser?.close()
+            assetManager?.close()
         }
     }
 
@@ -586,8 +641,9 @@ class InstallerManager(
                 PackageManager.GET_PROVIDERS or PackageManager.GET_META_DATA,
             )
 
+            requireNotNull(packageInfo) { "Cannot parse plugin providers" }
             val providerList = mutableListOf<ProviderInfo>()
-            packageInfo?.providers?.forEach { provider ->
+            packageInfo.providers?.forEach { provider ->
                 val authorities = provider.authority?.split(";")?.filter { it.isNotBlank() }
                 if (!authorities.isNullOrEmpty()) {
                     val metaDataList = provider.metaData?.keySet()?.mapNotNull { key ->
@@ -617,8 +673,7 @@ class InstallerManager(
             }
             return providerList
         } catch (e: Exception) {
-            Timber.tag(TAG).e(e, "解析APK文件ContentProvider失败: $apkPath")
-            return emptyList()
+            throw IOException("Cannot parse plugin providers: $apkPath", e)
         }
     }
 

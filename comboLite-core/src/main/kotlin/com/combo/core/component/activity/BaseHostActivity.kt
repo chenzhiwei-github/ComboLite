@@ -130,6 +130,19 @@ open class BaseHostActivity : ComponentActivity() {
         pluginActivity?.onSaveInstanceState(outState)
     }
 
+    /** Framework-only state hooks for generation-fenced hosts. */
+    protected fun saveHostFrameworkInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+    }
+
+    protected fun saveHostFrameworkInstanceState(outState: Bundle, outPersistentState: PersistableBundle) {
+        super.onSaveInstanceState(outState, outPersistentState)
+    }
+
+    protected fun restoreHostFrameworkInstanceState(savedInstanceState: Bundle) {
+        super.onRestoreInstanceState(savedInstanceState)
+    }
+
     override fun onRestoreInstanceState(savedInstanceState: Bundle) {
         super.onRestoreInstanceState(savedInstanceState)
         pluginActivity?.onRestoreInstanceState(savedInstanceState)

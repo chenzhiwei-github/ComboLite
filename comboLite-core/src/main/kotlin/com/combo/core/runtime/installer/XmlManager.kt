@@ -17,6 +17,11 @@
 package com.combo.core.runtime.installer
 
 import android.app.Application
+import com.combo.core.runtime.RegistryAccessMode
+import com.combo.core.runtime.RegistryRecoveryRequiredException
+import android.system.Os
+import android.system.OsConstants
+import android.system.ErrnoException
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Xml
@@ -48,8 +53,9 @@ import kotlin.concurrent.withLock
  * 4. 延迟写入机制，减少磁盘写入次数
  * 5. 文件完整性校验，防止数据损坏
  */
-class XmlManager(
+class XmlManager @JvmOverloads constructor(
     private val context: Application,
+    internal val registryAccessMode: RegistryAccessMode = RegistryAccessMode.READ_ONLY_FAIL_CLOSED,
 ) {
     companion object {
         private const val TAG = "InstallerXmlManager"
@@ -123,8 +129,9 @@ class XmlManager(
     private val hasUnsavedChanges = AtomicBoolean(false)
 
     // HandlerThread 用于后台调度写入任务
-    private val handlerThread = HandlerThread("XmlWriterThread").apply { start() }
-    private val writeHandler = Handler(handlerThread.looper)
+    private val handlerThread = if (registryAccessMode == RegistryAccessMode.MUTABLE_INSTALLER)
+        HandlerThread("XmlWriterThread").apply { start() } else null
+    private val writeHandler = handlerThread?.let { Handler(it.looper) }
 
     // 延迟写入任务 (使用 val，每次取消并重新 post)
     private val delayedWriteRunnable =
@@ -144,10 +151,7 @@ class XmlManager(
             }
         }
 
-    init {
-        // 初始化时加载缓存
-        initializeCache()
-    }
+    // Registry remains lazy: exact artifact APIs never open plugins.xml.
 
     // 辅助函数，封装读锁操作
     private inline fun <T> read(action: () -> T): T {
@@ -176,6 +180,19 @@ class XmlManager(
     private fun initializeCache() {
         write {
             if (!cacheInitialized) {
+                if (registryAccessMode == RegistryAccessMode.READ_ONLY_FAIL_CLOSED) {
+                    validateReadOnlyRegistryState()
+                    try {
+                        val plugins = loadPluginsFromDisk()
+                        validateReadOnlyRegistryState()
+                        pluginCache.clear()
+                        plugins.forEach { check(pluginCache.put(it.id, it) == null) { "Duplicate plugin ID" } }
+                        cacheInitialized = true
+                    } catch (e: Exception) {
+                        throw RegistryRecoveryRequiredException("Registry requires Authority recovery", e)
+                    }
+                    return@write
+                }
                 try {
                     val plugins = loadPluginsFromDisk()
                     pluginCache.clear()
@@ -209,6 +226,38 @@ class XmlManager(
         }
     }
 
+    private fun validateReadOnlyRegistryState() {
+        requireRecoveryPathsAbsent()
+        if (existsNoFollow(pluginsConfigFile) && !OsConstants.S_ISREG(Os.lstat(pluginsConfigFile.path).st_mode)) {
+            throw RegistryRecoveryRequiredException("Registry must be a regular file")
+        }
+    }
+
+    private fun requireRecoveryPathsAbsent() {
+        if (existsNoFollow(backupConfigFile) || existsNoFollow(tempConfigFile)) {
+            throw RegistryRecoveryRequiredException("Registry recovery belongs to installation authority")
+        }
+    }
+
+    private fun existsNoFollow(file: File): Boolean = try {
+        Os.lstat(file.path)
+        true
+    } catch (e: ErrnoException) {
+        if (e.errno == OsConstants.ENOENT) false else throw e
+    }
+
+    private fun openReadOnlyMainRegistry(): FileInputStream {
+        requireRecoveryPathsAbsent()
+        val fd = Os.open(pluginsConfigFile.path, OsConstants.O_RDONLY or OsConstants.O_NOFOLLOW, 0)
+        try {
+            check(OsConstants.S_ISREG(Os.fstat(fd).st_mode)) { "Registry must be a regular file" }
+            return FileInputStream(fd)
+        } catch (e: Throwable) {
+            Os.close(fd)
+            throw e
+        }
+    }
+
     /**
      * 从磁盘加载插件配置
      * @param useBackup 是否使用备份文件
@@ -221,7 +270,8 @@ class XmlManager(
 
         val pluginList = mutableListOf<PluginInfo>()
         try {
-            FileInputStream(targetFile).use { fis ->
+            (if (registryAccessMode == RegistryAccessMode.READ_ONLY_FAIL_CLOSED)
+                openReadOnlyMainRegistry() else FileInputStream(targetFile)).use { fis ->
                 val parser =
                     XmlPullParserFactory
                         .newInstance()
@@ -441,6 +491,7 @@ class XmlManager(
      * 尝试从备份文件恢复数据
      */
     private fun tryRestoreFromBackup() {
+        registryAccessMode.requireMutable("tryRestoreFromBackup")
         Timber
             .tag(TAG)
             .w("正在尝试从备份文件恢复: ${backupConfigFile.absolutePath}")
@@ -480,6 +531,7 @@ class XmlManager(
      * @param createBackup 是否创建备份文件 (此参数在这里不直接控制原子写入，原子写入是内部逻辑)
      */
     private fun writePluginsToDisk(createBackup: Boolean = true) {
+        registryAccessMode.requireMutable("writePluginsToDisk")
         val plugins = pluginCache.values.toList()
         Timber.tag(TAG).d("开始写入操作到磁盘。插件总数: ${plugins.size}")
 
@@ -625,8 +677,9 @@ class XmlManager(
      * 在短时间内的多次修改只会触发一次磁盘写入
      */
     private fun scheduleDelayedWrite() {
-        writeHandler.removeCallbacks(delayedWriteRunnable)
-        writeHandler.postDelayed(delayedWriteRunnable, WRITE_DELAY_MS)
+        registryAccessMode.requireMutable("scheduleDelayedWrite")
+        writeHandler?.removeCallbacks(delayedWriteRunnable)
+        writeHandler?.postDelayed(delayedWriteRunnable, WRITE_DELAY_MS)
         hasUnsavedChanges.set(true)
         Timber.tag(TAG).d("延迟写入已调度。")
     }
@@ -635,9 +688,10 @@ class XmlManager(
      * 立即同步所有未保存的更改到磁盘
      */
     fun flushToDisk() {
+        registryAccessMode.requireMutable("flushToDisk")
         write {
             // 确保取消任何正在等待的延迟写入任务，因为我们将立即执行
-            writeHandler.removeCallbacks(delayedWriteRunnable)
+            writeHandler?.removeCallbacks(delayedWriteRunnable)
             if (hasUnsavedChanges.get()) {
                 try {
                     Timber.tag(TAG).d("立即将未保存的更改刷新到磁盘。")
@@ -658,11 +712,9 @@ class XmlManager(
      * @return 插件信息列表的副本
      */
     fun getAllPlugins(): List<PluginInfo> =
-        read {
-            if (!cacheInitialized) {
-                initializeCache()
-            }
-            pluginCache.values.toList()
+        run {
+            if (!cacheInitialized) initializeCache()
+            read { pluginCache.values.toList() }
         }
 
     /**
@@ -671,11 +723,9 @@ class XmlManager(
      * @return 插件信息，如果不存在则返回null
      */
     fun getPluginById(pluginId: String): PluginInfo? =
-        read {
-            if (!cacheInitialized) {
-                initializeCache()
-            }
-            pluginCache[pluginId]
+        run {
+            if (!cacheInitialized) initializeCache()
+            read { pluginCache[pluginId] }
         }
 
     /**
@@ -684,6 +734,7 @@ class XmlManager(
      * @throws IllegalArgumentException 如果插件ID已存在
      */
     fun addPlugin(plugin: PluginInfo) {
+        registryAccessMode.requireMutable("addPlugin")
         write {
             if (!cacheInitialized) {
                 initializeCache()
@@ -705,6 +756,7 @@ class XmlManager(
      * @throws NoSuchElementException 如果插件不存在
      */
     fun updatePlugin(plugin: PluginInfo) {
+        registryAccessMode.requireMutable("updatePlugin")
         write {
             if (!cacheInitialized) {
                 initializeCache()
@@ -727,6 +779,7 @@ class XmlManager(
      */
     fun removePlugin(pluginId: String): Boolean =
         write {
+            registryAccessMode.requireMutable("removePlugin")
             if (!cacheInitialized) {
                 initializeCache()
             }

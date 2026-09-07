@@ -4,6 +4,9 @@
 
 -keep public class com.combo.core.runtime.PluginManager { *; }
 -keep class com.combo.core.runtime.ValidationStrategy { *; }
+-keep class com.combo.core.runtime.RegistryAccessMode { *; }
+-keep class com.combo.core.runtime.RegistryMutationDeniedException { *; }
+-keep class com.combo.core.runtime.RegistryRecoveryRequiredException { *; }
 -keep class com.combo.core.runtime.loader.PluginClassLoadingPolicy { *; }
 -keep class com.combo.core.runtime.loader.PluginClassLoadingPolicy$* { *; }
 -keep class com.combo.core.runtime.loader.PluginClassLoader { *; }

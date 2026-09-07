@@ -63,19 +63,21 @@ open class PluginClassLoader(
 
     override fun loadClass(name: String, resolve: Boolean): Class<*> {
         val policy = loadingPolicy
-        if (policy !is PluginClassLoadingPolicy.ChildFirst) {
+        if (policy !is PluginClassLoadingPolicy.ChildFirst || !policy.isChildFirst(name)) {
             return super.loadClass(name, resolve)
         }
-        findLoadedClass(name)?.let { return it }
-        if (!policy.isChildFirst(name)) {
+        synchronized(this) {
+            findLoadedClass(name)?.let {
+                if (resolve) resolveClass(it)
+                return it
+            }
+            val local = try { findClassLocally(name) } catch (_: ClassNotFoundException) { null }
+            if (local != null) {
+                if (resolve) resolveClass(local)
+                return local
+            }
             return super.loadClass(name, resolve)
         }
-        val local = try {
-            findClassLocally(name)
-        } catch (_: ClassNotFoundException) {
-            null
-        }
-        return local ?: super.loadClass(name, resolve)
     }
 
     /**
