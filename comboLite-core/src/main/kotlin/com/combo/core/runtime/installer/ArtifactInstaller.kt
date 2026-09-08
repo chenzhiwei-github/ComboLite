@@ -2,6 +2,7 @@ package com.combo.core.runtime.installer
 
 import android.app.Application
 import android.os.Build
+import android.os.Process
 import android.system.ErrnoException
 import android.system.Os
 import android.system.OsConstants
@@ -82,10 +83,15 @@ internal class ArtifactInstaller(private val application: Application) {
         writeNew(File(target, RECORD), record.byteInputStream(), MAX_RECORD_BYTES)
         check(File(target, RECORD).setReadOnly()) { "Cannot seal artifact record" }
         syncDirectory(target)
+        inspect(target, pluginId, versionCode, sha256, requireSealed = false)
+        sealInstallation(target, ownedPaths)
         return inspect(target, pluginId, versionCode, sha256)
     }
 
-    fun inspect(directory: File, pluginId: String, versionCode: Long, sha256: String): PluginInfo {
+    fun inspect(directory: File, pluginId: String, versionCode: Long, sha256: String): PluginInfo =
+        inspect(directory, pluginId, versionCode, sha256, requireSealed = true)
+
+    private fun inspect(directory: File, pluginId: String, versionCode: Long, sha256: String, requireSealed: Boolean): PluginInfo {
         validateIdentity(pluginId, versionCode, sha256)
         val target = validateDirectory(directory, mayBeAbsent = false)
         val recordFile = File(target, RECORD)
@@ -121,7 +127,57 @@ internal class ArtifactInstaller(private val application: Application) {
             (1 until parts.size).map { parts.take(it).joinToString("/") }
         }
         check(intent.ownedRelativePaths == (actualPaths + directoryPaths).distinct().sorted()) { "Artifact ownership intent changed" }
+        if (requireSealed) requireSealedInstallation(target, actualPaths, directoryPaths.distinct())
         return info
+    }
+
+    /** ART receives a read-only APK neighborhood; persistent optimizer outputs cannot widen ownership. */
+    private fun sealInstallation(target: File, ownedPaths: List<String>) {
+        val entries = ownedPaths.map { relative ->
+            validateRelative(relative)
+            File(target, relative)
+        }
+        val files = entries.filter { OsConstants.S_ISREG(Os.lstat(it.path).st_mode) }
+        val directories = (entries.filter { OsConstants.S_ISDIR(Os.lstat(it.path).st_mode) } + target)
+            .sortedByDescending { it.path.length }
+        check(files.size + directories.size == entries.size + 1) { "Unexpected artifact entry during sealing" }
+        files.forEach { sealNode(it, directory = false) }
+        directories.forEach { sealNode(it, directory = true) }
+        syncDirectory(requireNotNull(target.parentFile))
+    }
+
+    private fun sealNode(node: File, directory: Boolean) {
+        val before = Os.lstat(node.path)
+        check(before.st_uid == Process.myUid() && if (directory) OsConstants.S_ISDIR(before.st_mode)
+            else OsConstants.S_ISREG(before.st_mode) && before.st_nlink == 1L)
+        val flags = OsConstants.O_RDONLY or OsConstants.O_CLOEXEC or OsConstants.O_NOFOLLOW
+        val descriptor = Os.open(node.path, flags, 0)
+        try {
+            val opened = Os.fstat(descriptor)
+            check(opened.st_dev == before.st_dev && opened.st_ino == before.st_ino && opened.st_mode == before.st_mode)
+            Os.fchmod(descriptor, if (directory) SEALED_DIRECTORY_MODE else SEALED_FILE_MODE)
+            Os.fsync(descriptor)
+            val after = Os.lstat(node.path)
+            check(after.st_dev == before.st_dev && after.st_ino == before.st_ino)
+            requireSealedNode(node, directory)
+        } finally {
+            Os.close(descriptor)
+        }
+    }
+
+    private fun requireSealedInstallation(target: File, files: List<String>, directories: List<String>) {
+        requireSealedNode(target, directory = true)
+        directories.forEach { requireSealedNode(File(target, it), directory = true) }
+        files.forEach { requireSealedNode(File(target, it), directory = false) }
+    }
+
+    private fun requireSealedNode(node: File, directory: Boolean) {
+        val stat = Os.lstat(node.path)
+        check(stat.st_uid == Process.myUid() && (if (directory) OsConstants.S_ISDIR(stat.st_mode)
+            else OsConstants.S_ISREG(stat.st_mode) && stat.st_nlink == 1L))
+        check(stat.st_mode and PERMISSION_MASK == if (directory) SEALED_DIRECTORY_MODE else SEALED_FILE_MODE) {
+            "Immutable artifact permissions changed: ${node.name}"
+        }
     }
 
     private fun validateIdentity(pluginId: String, versionCode: Long, sha256: String) {
@@ -324,6 +380,9 @@ internal class ArtifactInstaller(private val application: Application) {
         const val RECORD = "artifact-record.json"
         const val INTENT = "artifact-installation-intent.json"
         const val APK = "base.apk"
+        const val SEALED_FILE_MODE = 256 // 0400
+        const val SEALED_DIRECTORY_MODE = 320 // 0500
+        const val PERMISSION_MASK = 511 // 0777
         const val INDEX = "class_index"
         const val MAX_APK_BYTES = 1024L * 1024 * 1024
         const val MAX_NATIVE_BYTES = 512L * 1024 * 1024

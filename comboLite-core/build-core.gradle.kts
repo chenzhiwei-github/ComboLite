@@ -9,7 +9,7 @@ plugins {
 // Preserve the frozen Kotlin internal JVM suffix as well as ordinary public API descriptors.
 kotlin { compilerOptions { moduleName.set("comboLite-core_release") } }
 group = "io.github.lnzz123"
-version = "2.0.2-xj.7"
+version = "2.0.2-xj.8"
 android {
     namespace = "com.combo.core"
     compileSdk = 36
@@ -71,7 +71,7 @@ afterEvaluate {
                 from(components["release"])
                 groupId = "io.github.lnzz123"
                 artifactId = "combolite-core"
-                version = "2.0.2-xj.7"
+                version = "2.0.2-xj.8"
                 pom {
                     name.set("ComboLite Core GameHub fork")
                     description.set("Source-built immutable artifact loading fork reconstructed from upstream f4d4524")
