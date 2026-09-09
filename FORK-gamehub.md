@@ -55,3 +55,17 @@ by restoring source or by a source comparison.
   Gradle home was blocked while creating FileLockContentionHandler's socket.
 - No newly rebuilt artifacts, publication or device validation are claimed.
   The historical verification limits in FORK-xj.6/7/8.md still apply.
+
+## Verification after workspace access was enabled (2026-09-09)
+
+The `gamehub` branch has been imported into the requested ComboLite repository.
+Both documented scoped builds now pass with JDK 21:
+
+- `./core-build/gradlew -p core-build :comboLite-core:assembleRelease :comboLite-core:testDebugUnitTest`
+  completed successfully. The test task is `NO-SOURCE`.
+- `./gradlew -p build-logic :aar2apk:jar :aar2apk:test` completed successfully
+  with Gradle 8.13. The test task is `NO-SOURCE`.
+
+All 71 core archive files and all 16 aar2apk Kotlin sources still match their
+archived originals. These builds verify the source migration; no publication,
+remote push or new device/Release host-plugin compatibility result is claimed.
