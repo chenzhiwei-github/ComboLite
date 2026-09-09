@@ -23,6 +23,10 @@ import com.combo.core.model.PluginContext
 import com.combo.core.model.PluginFrameworkContext
 import com.combo.core.model.PluginInfo
 import com.combo.core.runtime.loader.PluginClassLoader
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -32,6 +36,7 @@ import kotlinx.coroutines.withContext
 import org.koin.core.context.GlobalContext
 import timber.log.Timber
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * 插件生命周期管理器
@@ -45,7 +50,43 @@ internal class PluginLifecycleManager(private val context: PluginFrameworkContex
         private const val CLASS_INDEX_TAG = "ClassIndex"
     }
 
+    private data class PinnedArtifact(val path: String, val sha256: String, val versionCode: Long)
+    private val exactArtifacts = ConcurrentHashMap<String, PinnedArtifact>()
+    private val exactLoadMutex = Mutex()
+
+    /** A slot remains pinned even after failure/unload: Native code cannot be unloaded safely in-process. */
+    suspend fun launchArtifact(plugin: PluginInfo, expectedSha256: String): Boolean = withContext(Dispatchers.IO) {
+        exactLoadMutex.withLock {
+            var loadingStarted = false
+            try {
+                val verified = context.installerManager.inspectArtifact(
+                    requireNotNull(File(plugin.path).parentFile), plugin.id, plugin.versionCode, expectedSha256,
+                )
+                check(verified == plugin) { "Caller descriptor differs from installed artifact record" }
+                val identity = PinnedArtifact(plugin.path, expectedSha256, plugin.versionCode)
+                val previous = exactArtifacts.putIfAbsent(plugin.id, identity)
+                check(previous == null || previous == identity) { "Process is pinned to another artifact; restart slot" }
+                context.loadedPlugins.value[plugin.id]?.let { loaded ->
+                    check(loaded.pluginInfo == plugin) { "Another artifact is already loaded" }
+                    return@withLock context.pluginInstances.value.containsKey(plugin.id)
+                }
+                loadingStarted = true
+                val loaded = requireNotNull(loadPlugin(plugin)) { "Artifact loading failed" }
+                context.loadedPlugins.update { it + (plugin.id to loaded) }
+                val instance = requireNotNull(instantiatePlugin(loaded)) { "Artifact initialization failed" }
+                context.pluginInstances.update { it + (plugin.id to instance) }
+                true
+            } catch (e: Throwable) {
+                Timber.tag(TAG).e(e, "Exact artifact initialization failed: ${plugin.id}")
+                if (loadingStarted) withContext(NonCancellable) { unloadPlugin(plugin.id) }
+                if (e is CancellationException) throw e
+                false
+            }
+        }
+    }
+
     suspend fun launchPlugin(pluginId: String): Boolean = withContext(Dispatchers.IO) {
+        check(!exactArtifacts.containsKey(pluginId)) { "Exact artifact process cannot use global registry selection" }
         try {
             when {
                 context.loadedPlugins.value.containsKey(pluginId) -> {
@@ -68,11 +109,6 @@ internal class PluginLifecycleManager(private val context: PluginFrameworkContex
     }
 
     suspend fun unloadPlugin(pluginId: String) = withContext(Dispatchers.IO) {
-        if (!context.loadedPlugins.value.containsKey(pluginId)) {
-            Timber.Forest.tag(TAG).w("尝试卸载一个未加载的插件: $pluginId")
-            return@withContext
-        }
-
         Timber.Forest.tag(TAG).i("开始卸载插件: $pluginId")
 
         context.pluginInstances.value[pluginId]?.let { instance ->
@@ -93,6 +129,7 @@ internal class PluginLifecycleManager(private val context: PluginFrameworkContex
     }
 
     suspend fun loadEnabledPlugins(): Int = withContext(Dispatchers.IO) {
+        check(exactArtifacts.isEmpty()) { "Exact artifact process cannot use global registry selection" }
         Timber.Forest.tag(TAG).i("开始异步初始化所有已启用的插件。")
         val enabledPlugins =
             getEnabledPlugins().filter { !context.loadedPlugins.value.containsKey(it.id) }
@@ -210,13 +247,14 @@ internal class PluginLifecycleManager(private val context: PluginFrameworkContex
                     plugin.id,
                     plugin.providers.filter { it.enabled })
 
-                val pluginInstallDir = context.installerManager.getPluginDirectory(plugin.id)
+                val pluginInstallDir = requireNotNull(pluginApkFile.parentFile)
                 val abi = Build.SUPPORTED_ABIS[0]
                 val nativeLibDir = File(pluginInstallDir, "lib/$abi")
                 val nativeLibraryPath =
                     if (nativeLibDir.exists()) nativeLibDir.absolutePath else null
-                val optimizedDirectory =
-                    context.installerManager.getOptimizedDirectory(plugin.id)?.absolutePath
+                val optimizedDirectory = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+                    File(pluginInstallDir, "dex_opt").apply { check(isDirectory || mkdir()) }.absolutePath
+                } else null
 
                 val classLoader = PluginClassLoader(
                     pluginId = plugin.id,
@@ -242,6 +280,7 @@ internal class PluginLifecycleManager(private val context: PluginFrameworkContex
             val instance = loadedPlugin.classLoader.getInterface(IPluginEntryClass::class.java, plugin.entryClass)
             if (instance != null) {
                 Timber.Forest.tag(TAG).d("插件入口类实例化成功: ${plugin.id} -> ${plugin.entryClass}")
+                context.pluginInstances.update { it + (plugin.id to instance) }
                 loadKoinModules(plugin.id, instance)
                 executeOnLoad(plugin, instance)
                 instance
@@ -265,14 +304,8 @@ internal class PluginLifecycleManager(private val context: PluginFrameworkContex
     }
 
     private fun executeOnLoad(plugin: PluginInfo, instance: IPluginEntryClass) {
-        try {
-            val pluginContext =
-                PluginContext(application = context.application, pluginInfo = plugin)
-            instance.onLoad(pluginContext)
-            Timber.Forest.tag(TAG).d("插件 [${plugin.id}] onLoad() 执行成功。")
-        } catch (e: Exception) {
-            Timber.Forest.tag(TAG).e(e, "插件 [${plugin.id}] onLoad() 执行失败。")
-        }
+        instance.onLoad(PluginContext(application = context.application, pluginInfo = plugin))
+        Timber.tag(TAG).d("Plugin ${plugin.id} onLoad completed")
     }
 
     private fun executeOnUnload(pluginId: String, instance: IPluginEntryClass) {
@@ -285,15 +318,9 @@ internal class PluginLifecycleManager(private val context: PluginFrameworkContex
     }
 
     private fun loadKoinModules(pluginId: String, instance: IPluginEntryClass) {
-        try {
-            val modules = instance.pluginModule
-            if (modules.isNotEmpty()) {
-                GlobalContext.get().loadModules(modules)
-                Timber.Forest.tag(TAG).d("插件 [$pluginId] 的 ${modules.size} 个 Koin 模块加载成功。")
-            }
-        } catch (e: Exception) {
-            Timber.Forest.tag(TAG).e(e, "加载插件 [$pluginId] 的 Koin 模块失败。")
-        }
+        val modules = instance.pluginModule
+        if (modules.isNotEmpty()) GlobalContext.get().loadModules(modules)
+        Timber.tag(TAG).d("Plugin $pluginId DI initialized")
     }
 
     private fun unloadKoinModules(pluginId: String, instance: IPluginEntryClass) {
@@ -309,29 +336,13 @@ internal class PluginLifecycleManager(private val context: PluginFrameworkContex
     }
 
     private fun loadClassIndexForPlugin(plugin: PluginInfo) {
-        val pluginDir = context.installerManager.getPluginDirectory(plugin.id)
-        val indexFile = File(pluginDir, "class_index")
-        var loadedCount = 0
-
-        if (!indexFile.exists()) {
-            Timber.Forest.tag(CLASS_INDEX_TAG).e("类索引文件未找到: ${indexFile.absolutePath}")
-            return
-        }
-
-        try {
-            indexFile.forEachLine { className ->
-                if (className.isNotBlank()) {
-                    val previousOwner = context.classIndex.put(className, plugin.id)
-                    if (previousOwner != null && previousOwner != plugin.id) {
-                        Timber.Forest.tag(CLASS_INDEX_TAG)
-                            .e("类索引冲突: 类 '$className' 已属于插件 [$previousOwner]，现被插件 [${plugin.id}] 覆盖。")
-                    }
-                    loadedCount++
-                }
+        val indexFile = File(requireNotNull(File(plugin.path).parentFile), "class_index")
+        check(indexFile.isFile && indexFile.length() > 0) { "Missing class index" }
+        indexFile.forEachLine { className ->
+            if (className.isNotBlank()) {
+                val previous = context.classIndex.putIfAbsent(className, plugin.id)
+                check(previous == null || previous == plugin.id) { "Class index collision: $className" }
             }
-            Timber.Forest.tag(CLASS_INDEX_TAG).d("为插件 [${plugin.id}] 从文件加载了 $loadedCount 个类索引。")
-        } catch (e: Exception) {
-            Timber.Forest.tag(CLASS_INDEX_TAG).e(e, "从文件加载类索引失败: ${indexFile.absolutePath}")
         }
     }
 

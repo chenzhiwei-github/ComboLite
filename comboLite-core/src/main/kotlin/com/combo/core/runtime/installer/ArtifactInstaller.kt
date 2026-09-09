@@ -150,7 +150,12 @@ internal class ArtifactInstaller(private val application: Application) {
         val before = Os.lstat(node.path)
         check(before.st_uid == Process.myUid() && if (directory) OsConstants.S_ISDIR(before.st_mode)
             else OsConstants.S_ISREG(before.st_mode) && before.st_nlink == 1L)
-        val flags = OsConstants.O_RDONLY or OsConstants.O_CLOEXEC or OsConstants.O_NOFOLLOW
+        val closeOnExec = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            OsConstants.O_CLOEXEC
+        } else {
+            0
+        }
+        val flags = OsConstants.O_RDONLY or closeOnExec or OsConstants.O_NOFOLLOW
         val descriptor = Os.open(node.path, flags, 0)
         try {
             val opened = Os.fstat(descriptor)
@@ -187,11 +192,11 @@ internal class ArtifactInstaller(private val application: Application) {
 
     private fun validateDirectory(directory: File, mayBeAbsent: Boolean): File {
         val root = application.filesDir.canonicalFile
-        val inputRoot = application.filesDir.absoluteFile.toPath()
-        val supplied = directory.absoluteFile.toPath()
+        val rootPath = root.path
+        val suppliedPath = directory.canonicalPath
         val relative = when {
-            supplied.startsWith(inputRoot) -> inputRoot.relativize(supplied).toString()
-            supplied.startsWith(root.toPath()) -> root.toPath().relativize(supplied).toString()
+            suppliedPath.startsWith(rootPath + File.separator) ->
+                suppliedPath.substring(rootPath.length + 1)
             else -> error("Artifact is outside application files directory")
         }
         validateRelative(relative)

@@ -28,8 +28,8 @@ import com.combo.core.runtime.InitState.NOT_INITIALIZED
 import com.combo.core.runtime.ValidationStrategy.Insecure
 import com.combo.core.runtime.ValidationStrategy.Strict
 import com.combo.core.runtime.ValidationStrategy.UserGrant
-import com.combo.core.runtime.loader.PluginClassLoadingPolicy
 import com.combo.core.runtime.installer.InstallerManager
+import com.combo.core.runtime.loader.PluginClassLoadingPolicy
 import com.combo.core.runtime.resource.PluginResourcesManager
 import com.combo.core.security.auth.AuthorizationManager
 import com.combo.core.security.permission.PermissionLevel
