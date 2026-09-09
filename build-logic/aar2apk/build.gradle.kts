@@ -53,3 +53,12 @@ gradlePlugin {
         }
     }
 }
+
+publishing {
+    repositories {
+        maven {
+            name = "gamehubLocal"
+            url = uri(rootProject.layout.buildDirectory.dir("m2repo"))
+        }
+    }
+}
