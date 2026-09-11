@@ -184,7 +184,13 @@ internal class DexProcessor(
     private fun resolveClasspathJars(file: File, buildDir: File): List<File> {
         if (!file.exists()) return emptyList()
         if (file.extension != "aar") return listOf(file)
-        val outDir = File(buildDir, "classpath_aars/${file.nameWithoutExtension}")
+        // Distinct coordinates can publish AAR files with the same file name, e.g.
+        // androidx.compose.ui:ui-android and org.jetbrains.compose.ui:ui-android both
+        // publish `ui.aar`. Keying the extraction directory by file name alone let the
+        // last artifact overwrite the first, silently dropping the real AndroidX classes
+        // from the R8 classpath. Use the absolute path to guarantee a unique directory.
+        val dirKey = "${file.absolutePath.hashCode().toUInt().toString(16)}_${file.nameWithoutExtension}"
+        val outDir = File(buildDir, "classpath_aars/$dirKey")
         outDir.deleteRecursively()
         outDir.mkdirs()
         val jars = mutableListOf<File>()

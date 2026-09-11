@@ -5,7 +5,26 @@ This branch collects the ComboLite changes currently consumed by GameHubKMP:
 | Component | Version | Source |
 | --- | --- | --- |
 | combolite-core | 2.0.2-xj.8 | Original fork commits 8c71ff3, 7cec2f5 and a0355e9, based on upstream f4d4524 |
-| aar2apk | 1.1.2-xj.4 | All 16 Kotlin source files from the archived sources JAR |
+| aar2apk | 1.1.2-xj.5 | All 16 Kotlin source files from the archived sources JAR |
+
+### aar2apk 1.1.2-xj.5
+
+`resolveClasspathJars` keyed the AAR extraction directory by `file.nameWithoutExtension`
+only. Host-provided AARs from different coordinates can share a file name (for example
+`androidx.compose.ui:ui-android` and `org.jetbrains.compose.ui:ui-android` both publish
+`ui.aar`; the JetBrains Android artifact is an empty stub). The last artifact overwrote the
+first, silently dropping real AndroidX classes — Compose UI/Foundation/Runtime, Material3,
+lifecycle, activity-ktx, navigation3-ui and more — from the R8 `--classpath`. With Compose UI
+missing, plugin program classes that override `ModifierNodeElement.create()/update()` (Coil
+`ContentPainterElement`, Haze `HazeSourceElement`/`HazeEffectNodeElement`, vJoy custom
+elements, cardsystem `HazeProvider` consumers) had those overrides shrunk as unreachable, so
+the host Compose runtime threw `AbstractMethodError` in
+`NodeChain.createAndInsertNodeAsChild` at first composition of the affected sub-tree.
+
+The fix keys the extraction directory by the source file's absolute path
+(`${hash}_${nameWithoutExtension}`), so no AAR can overwrite another. xj.4 bytes remain
+unchanged and immutable; xj.5 JAR SHA-256 is
+`f0e8817977108b79bbd4161b3131beac6afe08c8e104d59d1588b3a6c177f195`.
 
 The existing core fork commits and FORK-xj.6/7/8 notes are retained. Core implements
 host-controlled registry access, child-first/force-parent loading policy, exact
