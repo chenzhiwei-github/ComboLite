@@ -55,10 +55,12 @@ object PluginResourcesLoader {
             val resourcesLoader = ResourcesLoader()
 
             try {
-                val assetsProvider = PluginAssetsProvider(pluginFile)
-                val parcelFd =
-                    ParcelFileDescriptor.open(pluginFile, ParcelFileDescriptor.MODE_READ_ONLY)
-                val resourcesProvider = ResourcesProvider.loadFromApk(parcelFd, assetsProvider)
+                val resourcesProvider = ParcelFileDescriptor.open(
+                    pluginFile,
+                    ParcelFileDescriptor.MODE_READ_ONLY,
+                ).use { parcelFd ->
+                    ResourcesProvider.loadFromApk(parcelFd)
+                }
                 resourcesLoader.addProvider(resourcesProvider)
                 Timber.tag(TAG).d("插件资源提供器配置成功: ${pluginFile.name}")
             } catch (e: Exception) {
