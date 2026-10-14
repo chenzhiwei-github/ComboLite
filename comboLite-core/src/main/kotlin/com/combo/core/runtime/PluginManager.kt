@@ -44,6 +44,7 @@ import kotlinx.coroutines.launch
 import org.koin.android.ext.koin.androidContext
 import org.koin.core.context.GlobalContext.startKoin
 import timber.log.Timber
+import java.lang.reflect.Method
 import kotlin.reflect.jvm.javaMethod
 
 /**
@@ -213,10 +214,16 @@ object PluginManager {
         return requireContext().lifecycleManager.launchPlugin(pluginId)
     }
 
+    private val launchArtifactMethod: Method by lazy {
+        PluginManager::class.java.declaredMethods.single { it.name == "launchArtifact" }
+    }
+
     /** Load only the exact installed artifact authorized for this process. Never selects plugins.xml. */
     @RequiresPermission(PermissionLevel.HOST, hardFail = true)
     suspend fun launchArtifact(pluginInfo: PluginInfo, expectedSha256: String): Boolean {
-        if (::launchArtifact.javaMethod?.checkApiCaller() == false) return false
+        // Plain Java reflection: resolving the KFunction via kotlin-reflect costs seconds on the
+        // first call in a fresh plugin process, which is exactly when this API runs.
+        if (launchArtifactMethod.checkApiCaller() == false) return false
         return requireContext().lifecycleManager.launchArtifact(pluginInfo, expectedSha256)
     }
 
