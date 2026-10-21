@@ -43,6 +43,7 @@ import org.xmlpull.v1.XmlPullParser
 import timber.log.Timber
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.ZipFile
 import kotlin.reflect.jvm.javaMethod
 
@@ -302,7 +303,25 @@ class InstallerManager(
             config.entryClass == info.entryClass && config.pluginVersionName == info.versionName) {
             "Installed artifact record differs from APK metadata"
         }
+        inspectedArtifacts[info.id] = InspectedArtifact(info, info.copy(), expectedSha256)
         return info
+    }
+
+    private class InspectedArtifact(val instance: PluginInfo, val snapshot: PluginInfo, val sha256: String)
+
+    private val inspectedArtifacts = ConcurrentHashMap<String, InspectedArtifact>()
+
+    /**
+     * One-shot proof that [plugin] is the unmodified instance [inspectArtifact] last returned for
+     * [expectedSha256]. Identity is required so a caller cannot present a self-built descriptor.
+     */
+    internal fun consumeInspected(plugin: PluginInfo, expectedSha256: String): Boolean {
+        var matched = false
+        inspectedArtifacts.computeIfPresent(plugin.id) { _, cached ->
+            matched = cached.instance === plugin && cached.snapshot == plugin && cached.sha256 == expectedSha256
+            null
+        }
+        return matched
     }
 
     /**

@@ -59,10 +59,15 @@ internal class PluginLifecycleManager(private val context: PluginFrameworkContex
         exactLoadMutex.withLock {
             var loadingStarted = false
             try {
-                val verified = context.installerManager.inspectArtifact(
-                    requireNotNull(File(plugin.path).parentFile), plugin.id, plugin.versionCode, expectedSha256,
-                )
-                check(verified == plugin) { "Caller descriptor differs from installed artifact record" }
+                // The Host inspects immediately before launching; re-hashing the same sealed tree
+                // doubled that cost on every cold start. Any other descriptor is inspected here.
+                if (!context.installerManager.consumeInspected(plugin, expectedSha256)) {
+                    val verified = context.installerManager.inspectArtifact(
+                        requireNotNull(File(plugin.path).parentFile), plugin.id, plugin.versionCode, expectedSha256,
+                    )
+                    context.installerManager.consumeInspected(verified, expectedSha256)
+                    check(verified == plugin) { "Caller descriptor differs from installed artifact record" }
+                }
                 val identity = PinnedArtifact(plugin.path, expectedSha256, plugin.versionCode)
                 val previous = exactArtifacts.putIfAbsent(plugin.id, identity)
                 check(previous == null || previous == identity) { "Process is pinned to another artifact; restart slot" }
