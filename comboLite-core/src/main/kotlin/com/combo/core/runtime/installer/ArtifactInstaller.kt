@@ -44,7 +44,7 @@ internal class ArtifactInstaller(private val application: Application) {
     ): PluginInfo {
         validateIdentity(pluginId, versionCode, sha256)
         val target = validateDirectory(directory, mayBeAbsent = true)
-        if (exists(target)) return inspect(target, pluginId, versionCode, sha256)
+        if (exists(target)) return resumeSealing(target, pluginId, versionCode, sha256)
         val sourceStat = regular(source)
         check(sourceStat.st_size in 1..MAX_APK_BYTES) { "APK exceeds allowed size" }
         check(hash(source) == sha256) { "APK SHA-256 mismatch" }
@@ -90,6 +90,22 @@ internal class ArtifactInstaller(private val application: Application) {
 
     fun inspect(directory: File, pluginId: String, versionCode: Long, sha256: String): PluginInfo =
         inspect(directory, pluginId, versionCode, sha256, requireSealed = true)
+
+    /**
+     * A process killed after the durable record but before the last seal leaves a complete tree
+     * whose modes are only partly sealed. Repeat the install tail: the complete inventory, hashes
+     * and ownership intent are verified before any mode changes, then sealing is finished and the
+     * sealed tree is inspected again. A tree without a valid record still fails here unchanged and
+     * remains the Authority's to clean from its intent; nothing is deleted or overwritten.
+     */
+    private fun resumeSealing(target: File, pluginId: String, versionCode: Long, sha256: String): PluginInfo {
+        inspect(target, pluginId, versionCode, sha256, requireSealed = false)
+        val intentFile = File(target, INTENT)
+        check(regular(intentFile).st_size in 1..MAX_RECORD_BYTES)
+        val intent = openRegular(intentFile).bufferedReader().use { Json.decodeFromString<Intent>(it.readText()) }
+        sealInstallation(target, intent.ownedRelativePaths)
+        return inspect(target, pluginId, versionCode, sha256)
+    }
 
     private fun inspect(directory: File, pluginId: String, versionCode: Long, sha256: String, requireSealed: Boolean): PluginInfo {
         validateIdentity(pluginId, versionCode, sha256)
